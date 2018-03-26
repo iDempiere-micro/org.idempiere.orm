@@ -77,7 +77,7 @@ import java.util.logging.Level;
  *			<li>https://sourceforge.net/tracker/?func=detail&aid=2947622&group_id=176962&atid=879332
  */
 public abstract class PO
-	implements Serializable, Comparator<Object>, Evaluatee, Cloneable, IPO
+	implements Serializable, Comparator<Object>, Evaluatee, Cloneable, IPO, I_Persistent
 {
 	/**
 	 * 
@@ -2438,4 +2438,792 @@ public abstract class PO
 	{
 		set_Value("IsActive", new Boolean(active));
 	}	//	setActive
+
+	/**
+	 * 	Set AD_Org
+	 * 	@param AD_Org_ID org
+	 */
+	public void setAD_Org_ID (int AD_Org_ID)
+	{
+		set_ValueNoCheck ("AD_Org_ID", new Integer(AD_Org_ID));
+	}	//	setAD_Org_ID
+
+	/**
+	 *  Set Value w/o check (update, r/o, ..).
+	 * 	Used when Column is R/O
+	 *  Required for key and parent values
+	 *  @param ColumnName column name
+	 *  @param value value
+	 *  @return true if value set
+	 */
+	public final boolean set_ValueNoCheck (String ColumnName, Object value)
+	{
+		return set_Value(ColumnName, value, false);
+	}   //  set_ValueNoCheck
+
+	/*
+	 * Classes which override save() method:
+	 * org.compiere.process.DocActionTemplate
+	 * MClient
+	 * MClientInfo
+	 * MSystem
+	 */
+	/**************************************************************************
+	 *  Update Value or create new record.
+	 * 	To reload call load() - not updated
+	 *  @return true if saved
+	 */
+	public boolean save() {
+		checkValidContext();
+		CLogger.resetLast();
+		boolean newRecord = is_new();	//	save locally as load resets
+		if (!newRecord && !is_Changed())
+		{
+			if (log.isLoggable(Level.FINE)) log.fine("Nothing changed - " + p_info.getTableName());
+			return true;
+		}
+
+		for (int i = 0; i < m_setErrors.length; i++) {
+			ValueNamePair setError = m_setErrors[i];
+			if (setError != null) {
+				log.saveError(setError.getValue(), Msg.getElement(getCtx(), p_info.getColumnName(i)) + " - " + setError.getName());
+				return false;
+			}
+		}
+
+		//	Organization Check
+		if (getAD_Org_ID() == 0 && (get_AccessLevel() == ACCESSLEVEL_ORG) )
+		{
+			log.saveError("FillMandatory", Msg.getElement(getCtx(), "AD_Org_ID"));
+			return false;
+		}
+		//	Should be Org 0
+		if (getAD_Org_ID() != 0)
+		{
+			boolean reset = get_AccessLevel() == ACCESSLEVEL_SYSTEM;
+			if (!reset)
+			{
+				reset = get_AccessLevel() == ACCESSLEVEL_CLIENT
+						|| get_AccessLevel() == ACCESSLEVEL_SYSTEMCLIENT
+						|| get_AccessLevel() == ACCESSLEVEL_ALL
+						|| get_AccessLevel() == ACCESSLEVEL_CLIENTORG;
+			}
+			if (reset)
+			{
+				log.warning("Set Org to 0");
+				setAD_Org_ID(0);
+			}
+		}
+
+		Trx localTrx = null;
+		Trx trx = null;
+		Savepoint savepoint = null;
+		if (m_trxName == null)
+		{
+			StringBuilder l_trxname = new StringBuilder(LOCAL_TRX_PREFIX)
+					.append(get_TableName());
+			if (l_trxname.length() > 23)
+				l_trxname.setLength(23);
+			m_trxName = Trx.createTrxName(l_trxname.toString());
+			localTrx = Trx.get(m_trxName, true);
+			localTrx.setDisplayName(getClass().getName()+"_save");
+			localTrx.getConnection();
+		}
+		else
+		{
+			trx = Trx.get(m_trxName, false);
+			if (trx == null)
+			{
+				// Using a trx that was previously closed or never opened
+				// Creating and starting the transaction right here, but please note
+				// that this is not a good practice
+				trx = Trx.get(m_trxName, true);
+				log.severe("Transaction closed or never opened ("+m_trxName+") => starting now --> " + toString());
+			}
+		}
+
+		//	Before Save
+		try
+		{
+			// If not a localTrx we need to set a savepoint for rollback
+			if (localTrx == null)
+				savepoint = trx.setSavepoint(null);
+
+			if (!beforeSave(newRecord))
+			{
+				log.warning("beforeSave failed - " + toString());
+				if (localTrx != null)
+				{
+					localTrx.rollback();
+					localTrx.close();
+					m_trxName = null;
+				}
+				else
+				{
+					trx.rollback(savepoint);
+					savepoint = null;
+				}
+				return false;
+			}
+		}
+		catch (Exception e)
+		{
+			log.log(Level.WARNING, "beforeSave - " + toString(), e);
+			String msg = org.idempiere.common.exceptions.DBException.getDefaultDBExceptionMessage(e);
+			log.saveError(msg != null ? msg : "Error", e, false);
+			if (localTrx != null)
+			{
+				localTrx.rollback();
+				localTrx.close();
+				m_trxName = null;
+			}
+			else if (savepoint != null)
+			{
+				try
+				{
+					trx.rollback(savepoint);
+				} catch (SQLException e1){}
+				savepoint = null;
+			}
+			return false;
+		}
+
+		try
+		{
+			//	Save
+			if (newRecord)
+			{
+				boolean b = saveNew();
+				if (b)
+				{
+					if (localTrx != null)
+						return localTrx.commit();
+					else
+						return b;
+				}
+				else
+				{
+					if (localTrx != null)
+						localTrx.rollback();
+					else
+						trx.rollback(savepoint);
+					return b;
+				}
+			}
+			else
+			{
+				boolean b = saveUpdate();
+				if (b)
+				{
+					if (localTrx != null)
+						return localTrx.commit();
+					else
+						return b;
+				}
+				else
+				{
+					if (localTrx != null)
+						localTrx.rollback();
+					else
+						trx.rollback(savepoint);
+					return b;
+				}
+			}
+		}
+		catch (Exception e)
+		{
+			log.log(Level.WARNING, "afterSave - " + toString(), e);
+			String msg = DBException.getDefaultDBExceptionMessage(e);
+			log.saveError(msg != null ? msg : "Error", e);
+			if (localTrx != null)
+			{
+				localTrx.rollback();
+			}
+			else if (savepoint != null)
+			{
+				try
+				{
+					trx.rollback(savepoint);
+				} catch (SQLException e1){}
+				savepoint = null;
+			}
+			return false;
+		}
+		finally
+		{
+			if (localTrx != null)
+			{
+				localTrx.close();
+				m_trxName = null;
+			}
+			else
+			{
+				if (savepoint != null)
+				{
+					try {
+						trx.releaseSavepoint(savepoint);
+					} catch (SQLException e) {
+						e.printStackTrace();
+					}
+				}
+				savepoint = null;
+				trx = null;
+			}
+		}
+	}
+
+	protected boolean saveNew()
+	{
+		//  Set ID for single key - Multi-Key values need explicitly be set previously
+		if (m_IDs.length == 1 && p_info.hasKeyColumn()
+				&& m_KeyColumns[0].endsWith("_ID"))	//	AD_Language, EntityType
+		{
+			int no = saveNew_getID();
+			if (no <= 0)
+				throw new AdempiereException("no <= 0");
+			// the primary key is not overwrite with the local sequence
+			if (isReplication())
+			{
+				if (get_ID() > 0)
+				{
+					no = get_ID();
+				}
+			}
+			if (no <= 0)
+			{
+				log.severe("No NextID (" + no + ")");
+				return saveFinish (true, false);
+			}
+			m_IDs[0] = new Integer(no);
+			set_ValueNoCheck(m_KeyColumns[0], m_IDs[0]);
+		}
+		//uuid secondary key
+		int uuidIndex = p_info.getColumnIndex(getUUIDColumnName());
+		if (uuidIndex >= 0)
+		{
+			String value = (String)get_Value(uuidIndex);
+			if (p_info.getColumn(uuidIndex).FieldLength == 36 && (value == null || value.length() == 0))
+			{
+				UUID uuid = UUID.randomUUID();
+				set_ValueNoCheck(p_info.getColumnName(uuidIndex), uuid.toString());
+			}
+		}
+		if (m_trxName == null) {
+			if (log.isLoggable(Level.FINE)) log.fine(p_info.getTableName() + " - " + get_WhereClause(true));
+		} else {
+			if (log.isLoggable(Level.FINE)) log.fine("[" + m_trxName + "] - " + p_info.getTableName() + " - " + get_WhereClause(true));
+		}
+
+		boolean ok = doInsert(isLogSQLScript());
+		return saveFinish (true, ok);
+	}   //  saveNew
+
+	/**
+	 * 	Finish Save Process
+	 *	@param newRecord new
+	 *	@param success success
+	 *	@return true if saved
+	 */
+	protected boolean saveFinish (boolean newRecord, boolean success)
+	{
+		//
+		try
+		{
+			success = afterSave (newRecord, success);
+		}
+		catch (Exception e)
+		{
+			log.log(Level.WARNING, "afterSave", e);
+			log.saveError("Error", e, false);
+			success = false;
+			//	throw new DBException(e);
+		}
+		//	OK
+		if (success)
+		{
+			//post osgi event
+			String topic = newRecord ? IEventTopics.PO_POST_CREATE : IEventTopics.PO_POST_UPADTE;
+			Event event = EventManager.newEvent(topic, this);
+			EventManager.getInstance().postEvent(event);
+
+			if (s_docWFMgr == null)
+			{
+				try
+				{
+					Class.forName("org.compiere.wf.DocWorkflowManager");
+				}
+				catch (Exception e)
+				{
+				}
+			}
+			if (s_docWFMgr != null)
+				s_docWFMgr.process (this, p_info.getAD_Table_ID());
+
+			//	Copy to Old values
+			int size = p_info.getColumnCount();
+			for (int i = 0; i < size; i++)
+			{
+				if (m_newValues[i] != null)
+				{
+					if (m_newValues[i] == Null.NULL)
+						m_oldValues[i] = null;
+					else
+						m_oldValues[i] = m_newValues[i];
+				}
+			}
+			m_newValues = new Object[size];
+			m_createNew = false;
+		}
+		if (!newRecord)
+			CacheMgt.get().reset(p_info.getTableName());
+		else if (get_ID() > 0 && success)
+			CacheMgt.get().newRecord(p_info.getTableName(), get_ID());
+
+		return success;
+	}	//	saveFinish
+
+	/**
+	 * 	Update Record directly
+	 * 	@return true if updated
+	 */
+	protected boolean saveUpdate()
+	{
+		boolean ok = doUpdate(isLogSQLScript());
+
+		return saveFinish (false, ok);
+	}   //  saveUpdate
+
+	protected boolean doUpdate(boolean withValues) {
+		//params for insert statement
+		List<Object> params = new ArrayList<Object>();
+
+		String where = get_WhereClause(true);
+		//
+		boolean changes = false;
+		StringBuilder sql = new StringBuilder ("UPDATE ");
+		sql.append(p_info.getTableName()).append( " SET ");
+		boolean updated = false;
+		boolean updatedBy = false;
+		lobReset();
+
+		int size = get_ColumnCount();
+		for (int i = 0; i < size; i++)
+		{
+			Object value = m_newValues[i];
+			if (value == null
+					|| p_info.isVirtualColumn(i))
+				continue;
+			//  we have a change
+			Class<?> c = p_info.getColumnClass(i);
+			int dt = p_info.getColumnDisplayType(i);
+			String columnName = p_info.getColumnName(i);
+			//
+			//	updated/by
+			if (columnName.equals("UpdatedBy"))
+			{
+				if (updatedBy)	//	explicit
+					continue;
+				updatedBy = true;
+			}
+			else if (columnName.equals("Updated"))
+			{
+				if (updated)
+					continue;
+				updated = true;
+			}
+			if (DisplayType.isLOB(dt))
+			{
+				lobAdd (value, i, dt);
+				//	If no changes set UpdatedBy explicitly to ensure commit of lob
+				if (!changes && !updatedBy)
+				{
+					int AD_User_ID = Env.getContextAsInt(p_ctx, "#AD_User_ID");
+					set_ValueNoCheck("UpdatedBy", new Integer(AD_User_ID));
+					sql.append("UpdatedBy=").append(AD_User_ID);
+					changes = true;
+					updatedBy = true;
+				}
+				continue;
+			}
+			//	Update Document No
+			if (columnName.equals("DocumentNo"))
+			{
+				String strValue = (String)value;
+				if (strValue.startsWith("<") && strValue.endsWith(">"))
+				{
+					value = null;
+					int AD_Client_ID = getAD_Client_ID();
+					int index = p_info.getColumnIndex("C_DocTypeTarget_ID");
+					if (index == -1)
+						index = p_info.getColumnIndex("C_DocType_ID");
+				}
+				else
+				if (log.isLoggable(Level.INFO)) log.info("DocumentNo updated: " + m_oldValues[i] + " -> " + value);
+			}
+
+			if (changes)
+				sql.append(", ");
+			changes = true;
+			sql.append(columnName).append("=");
+
+			if (withValues)
+			{
+				//  values
+				if (value == Null.NULL)
+					sql.append("NULL");
+				else if (value instanceof Integer || value instanceof BigDecimal)
+					sql.append(value);
+				else if (c == Boolean.class)
+				{
+					boolean bValue = false;
+					if (value instanceof Boolean)
+						bValue = ((Boolean)value).booleanValue();
+					else
+						bValue = "Y".equals(value);
+					sql.append(encrypt(i,bValue ? "'Y'" : "'N'"));
+				}
+				else if (value instanceof Timestamp)
+					sql.append(DB.TO_DATE((Timestamp)encrypt(i,value),p_info.getColumnDisplayType(i) == DisplayType.Date));
+				else {
+					if (value.toString().length() == 0) {
+						// [ 1722057 ] Encrypted columns throw error if saved as null
+						// don't encrypt NULL
+						sql.append(DB.TO_STRING(value.toString()));
+					} else {
+						sql.append(encrypt(i,DB.TO_STRING(value.toString())));
+					}
+				}
+			}
+			else
+			{
+				if (value instanceof Timestamp && dt == DisplayType.Date)
+					sql.append("trunc(cast(? as date))");
+				else
+					sql.append("?");
+
+				if (value == Null.NULL)
+				{
+					params.add(null);
+				}
+				else if (c == Boolean.class)
+				{
+					boolean bValue = false;
+					if (value instanceof Boolean)
+						bValue = ((Boolean)value).booleanValue();
+					else
+						bValue = "Y".equals(value);
+					params.add(encrypt(i,bValue ? "Y" : "N"));
+				}
+				else if (c == String.class)
+				{
+					if (value.toString().length() == 0) {
+						// [ 1722057 ] Encrypted columns throw error if saved as null
+						// don't encrypt NULL
+						params.add(null);
+					} else {
+						params.add(encrypt(i,value));
+					}
+				}
+				else
+				{
+					params.add(value);
+				}
+			}
+
+		}	//   for all fields
+
+		//	Custom Columns (cannot be logged as no column)
+		if (m_custom != null)
+		{
+			Iterator<String> it = m_custom.keySet().iterator();
+			while (it.hasNext())
+			{
+				if (changes)
+					sql.append(", ");
+				changes = true;
+				//
+				String column = (String)it.next();
+				String value = (String)m_custom.get(column);
+				int index = p_info.getColumnIndex(column);
+				if (withValues)
+				{
+					sql.append(column).append("=").append(encrypt(index,value));
+				}
+				else
+				{
+					sql.append(column).append("=?");
+					if (value == null || value.toString().length() == 0)
+					{
+						params.add(null);
+					}
+					else
+					{
+						params.add(encrypt(index,value));
+					}
+				}
+			}
+			m_custom = null;
+		}
+
+		//	Something changed
+		if (changes)
+		{
+			if (m_trxName == null) {
+				if (log.isLoggable(Level.FINE)) log.fine(p_info.getTableName() + "." + where);
+			} else {
+				if (log.isLoggable(Level.FINE)) log.fine("[" + m_trxName + "] - " + p_info.getTableName() + "." + where);
+			}
+			if (!updated)	//	Updated not explicitly set
+			{
+				Timestamp now = new Timestamp(System.currentTimeMillis());
+				set_ValueNoCheck("Updated", now);
+				if (withValues)
+				{
+					sql.append(",Updated=").append(DB.TO_DATE(now, false));
+				}
+				else
+				{
+					sql.append(",Updated=?");
+					params.add(now);
+				}
+			}
+			if (!updatedBy)	//	UpdatedBy not explicitly set
+			{
+				int AD_User_ID = Env.getContextAsInt(p_ctx, "#AD_User_ID");
+				set_ValueNoCheck("UpdatedBy", new Integer(AD_User_ID));
+				if (withValues)
+				{
+					sql.append(",UpdatedBy=").append(AD_User_ID);
+				}
+				else
+				{
+					sql.append(",UpdatedBy=?");
+					params.add(AD_User_ID);
+				}
+			}
+			sql.append(" WHERE ").append(where);
+			/** @todo status locking goes here */
+
+			if (log.isLoggable(Level.FINEST)) log.finest(sql.toString());
+			int no = 0;
+			if (isUseTimeoutForUpdate())
+				no = withValues ? DB.executeUpdateEx(sql.toString(), m_trxName, QUERY_TIME_OUT)
+						: DB.executeUpdateEx(sql.toString(), params.toArray(), m_trxName, QUERY_TIME_OUT);
+			else
+				no = withValues ? DB.executeUpdate(sql.toString(), m_trxName)
+						: DB.executeUpdate(sql.toString(), params.toArray(), false, m_trxName);
+			boolean ok = no == 1;
+			if (ok)
+				ok = lobSave();
+			else
+			{
+				if (m_trxName == null)
+					log.saveError("SaveError", "Update return " + no + " instead of 1"
+							+ " - " + p_info.getTableName() + "." + where);
+				else
+					log.saveError("SaveError", "Update return " + no + " instead of 1"
+							+ " - [" + m_trxName + "] - " + p_info.getTableName() + "." + where);
+			}
+			return ok;
+		}
+		else
+		{
+			// nothing changed, so OK
+			return true;
+		}
+	}
+
+	protected boolean doInsert(boolean withValues) {
+		int index;
+		lobReset();
+
+		//params for insert statement
+		List<Object> params = new ArrayList<Object>();
+
+		//	SQL
+		StringBuilder sqlInsert = new StringBuilder("INSERT INTO ");
+		sqlInsert.append(p_info.getTableName()).append(" (");
+		StringBuilder sqlValues = new StringBuilder(") VALUES (");
+		int size = get_ColumnCount();
+		boolean doComma = false;
+		for (int i = 0; i < size; i++)
+		{
+			Object value = get_Value(i);
+			//	Don't insert NULL values (allows Database defaults)
+			if (value == null
+					|| p_info.isVirtualColumn(i))
+				continue;
+
+			//	Display Type
+			int dt = p_info.getColumnDisplayType(i);
+			if (DisplayType.isLOB(dt))
+			{
+				lobAdd (value, i, dt);
+				continue;
+			}
+
+			//	** add column **
+			if (doComma)
+			{
+				sqlInsert.append(",");
+				sqlValues.append(",");
+			}
+			else
+				doComma = true;
+			sqlInsert.append(p_info.getColumnName(i));
+			//
+			//  Based on class of definition, not class of value
+			Class<?> c = p_info.getColumnClass(i);
+			if (withValues)
+			{
+				try
+				{
+					if (c == Object.class) //  may have need to deal with null values differently
+						sqlValues.append (saveNewSpecial (value, i));
+					else if (value == null || value.equals (Null.NULL))
+						sqlValues.append ("NULL");
+					else if (value instanceof Integer || value instanceof BigDecimal)
+						sqlValues.append (value);
+					else if (c == Boolean.class)
+					{
+						boolean bValue = false;
+						if (value instanceof Boolean)
+							bValue = ((Boolean)value).booleanValue();
+						else
+							bValue = "Y".equals(value);
+						sqlValues.append (encrypt(i,bValue ? "'Y'" : "'N'"));
+					}
+					else if (value instanceof Timestamp)
+						sqlValues.append (DB.TO_DATE ((Timestamp)encrypt(i,value), p_info.getColumnDisplayType (i) == DisplayType.Date));
+					else if (c == String.class)
+						sqlValues.append (encrypt(i,DB.TO_STRING ((String)value)));
+					else if (DisplayType.isLOB(dt))
+						sqlValues.append("null");		//	no db dependent stuff here
+					else
+						sqlValues.append (saveNewSpecial (value, i));
+				}
+				catch (Exception e)
+				{
+					String msg = "";
+					if (m_trxName != null)
+						msg = "[" + m_trxName + "] - ";
+					msg += p_info.toString(i)
+							+ " - Value=" + value
+							+ "(" + (value==null ? "null" : value.getClass().getName()) + ")";
+					log.log(Level.SEVERE, msg, e);
+					throw new DBException(e);	//	fini
+				}
+			}
+			else
+			{
+				if (value instanceof Timestamp && dt == DisplayType.Date)
+					sqlValues.append("trunc(cast(? as date))");
+				else
+					sqlValues.append("?");
+
+				if (DisplayType.isLOB(dt))
+				{
+					params.add(null);
+				}
+				else if (value == null || value.equals (Null.NULL))
+				{
+					params.add(null);
+				}
+				else if (c == Boolean.class)
+				{
+					boolean bValue = false;
+					if (value instanceof Boolean)
+						bValue = ((Boolean)value).booleanValue();
+					else
+						bValue = "Y".equals(value);
+					params.add(encrypt(i,bValue ? "Y" : "N"));
+				}
+				else if (c == String.class)
+				{
+					if (value.toString().length() == 0)
+					{
+						params.add(null);
+					}
+					else
+					{
+						params.add(encrypt(i,value));
+					}
+				}
+				else
+				{
+					params.add(value);
+				}
+			}
+
+		}
+		//	Custom Columns
+		if (m_custom != null)
+		{
+			Iterator<String> it = m_custom.keySet().iterator();
+			while (it.hasNext())
+			{
+				String column = (String)it.next();
+				index = p_info.getColumnIndex(column);
+				String value = (String)m_custom.get(column);
+				if (value == null)
+					continue;
+				if (doComma)
+				{
+					sqlInsert.append(",");
+					sqlValues.append(",");
+				}
+				else
+					doComma = true;
+				sqlInsert.append(column);
+				if (withValues)
+				{
+					sqlValues.append(encrypt(index, value));
+				}
+				else
+				{
+					sqlValues.append("?");
+					if (value == null || value.toString().length() == 0)
+					{
+						params.add(null);
+					}
+					else
+					{
+						params.add(encrypt(index, value));
+					}
+				}
+			}
+			m_custom = null;
+		}
+		sqlInsert.append(sqlValues)
+				.append(")");
+		//
+		int no = withValues ? DB.executeUpdate(sqlInsert.toString(), m_trxName)
+				: DB.executeUpdate(sqlInsert.toString(), params.toArray(), false, m_trxName);
+		boolean ok = no == 1;
+		if (ok)
+		{
+			ok = lobSave();
+			if (!load(m_trxName))		//	re-read Info
+			{
+				if (m_trxName == null)
+					log.log(Level.SEVERE, "reloading");
+				else
+					log.log(Level.SEVERE, "[" + m_trxName + "] - reloading");
+				ok = false;;
+			}
+		}
+		else
+		{
+			String msg = "Not inserted - ";
+			if (CLogMgt.isLevelFiner())
+				msg += sqlInsert.toString();
+			else
+				msg += get_TableName();
+			if (m_trxName == null)
+				log.log(Level.WARNING, msg);
+			else
+				log.log(Level.WARNING, "[" + m_trxName + "]" + msg);
+		}
+		return ok;
+	}
 }   //  PO
