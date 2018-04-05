@@ -1506,8 +1506,9 @@ public abstract class PO
 	 */
 	protected int saveNew_getID()
 	{
-		if (get_ID() > 0 && get_ID() < 999999) // 2Pack assigns official ID's when importing
-			return get_ID();
+		int result = get_ID();
+		if ( result > 0 && result < 999999) // 2Pack assigns official ID's when importing
+			return result;
 		return 0;
 	}	//	saveNew_getID
 
