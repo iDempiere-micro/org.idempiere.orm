@@ -2502,7 +2502,7 @@ public abstract class PO
 		if (getAD_Org_ID() != 0)
 		{
 			boolean reset = get_AccessLevel() == ACCESSLEVEL_SYSTEM;
-			if (!reset)
+			if (!reset && false ) // isOrgLevelOnly default is false
 			{
 				reset = get_AccessLevel() == ACCESSLEVEL_CLIENT
 						|| get_AccessLevel() == ACCESSLEVEL_SYSTEMCLIENT
