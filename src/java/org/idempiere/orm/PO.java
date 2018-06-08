@@ -16,6 +16,7 @@
  *****************************************************************************/
 package org.idempiere.orm;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.compiere.model.I_AD_Column;
 import org.compiere.model.I_AD_Element;
 import org.compiere.model.I_AD_Field;
@@ -378,6 +379,7 @@ public abstract class PO
 	 * 	Get Context
 	 * 	@return context
 	 */
+	@JsonIgnore
 	public Properties getCtx()
 	{
 		return p_ctx;
@@ -387,6 +389,7 @@ public abstract class PO
 	 * 	Get Logger
 	 *	@return logger
 	 */
+	@JsonIgnore
 	public CLogger get_Logger()
 	{
 		return log;
