@@ -110,13 +110,15 @@ public abstract class PO
 	/** Dictionary Maintained Entity Type		*/
 	static public final String ENTITYTYPE_Dictionary = "D";
 
+	protected String m_columnNamePrefix = null;
+
 	/**************************************************************************
 	 *  Create New Persistent Object
 	 *  @param ctx context
 	 */
 	public PO (Properties ctx)
 	{
-		this (ctx, 0, null, null);
+		this (ctx, 0, null, null, null);
 	}   //  PO
 
 	/**
@@ -127,7 +129,7 @@ public abstract class PO
 	 */
 	public PO (Properties ctx, int ID, String trxName)
 	{
-		this (ctx, ID, trxName, null);
+		this (ctx, ID, trxName, null, null);
 	}   //  PO
 
 	/**
@@ -137,9 +139,9 @@ public abstract class PO
 	 *  	if null, a new record is created.
 	 *  @param trxName transaction name
 	 */
-	public PO (Properties ctx, ResultSet rs, String trxName)
+	public PO (Properties ctx, ResultSet rs, String trxName, String columnNamePrefix)
 	{
-		this (ctx, 0, trxName, rs);
+		this (ctx, 0, trxName, rs, columnNamePrefix);
 	}	//	PO
 
 	/**
@@ -160,7 +162,7 @@ public abstract class PO
 	 *  @param trxName transaction name
 	 *  @param rs optional - load from current result set position (no navigation, not closed)
 	 */
-	public PO (Properties ctx, int ID, String trxName, ResultSet rs)
+	public PO (Properties ctx, int ID, String trxName, ResultSet rs, String columnNamePrefix)
 	{
 		p_ctx = ctx != null ? ctx : Env.getCtx();
 		m_trxName = trxName;
@@ -173,6 +175,8 @@ public abstract class PO
 		m_oldValues = new Object[size];
 		m_newValues = new Object[size];
 		m_setErrors = new ValueNamePair[size];
+
+        m_columnNamePrefix = columnNamePrefix;
 
 		if (rs != null)
 			load(rs);		//	will not have virtual columns
@@ -903,7 +907,7 @@ public abstract class PO
 		//  load column values
 		for (index = 0; index < size; index++)
 		{
-			String columnName = p_info.getColumnName(index);
+			String columnName =  ( m_columnNamePrefix == null ? "" : m_columnNamePrefix ) + p_info.getColumnName(index);
 			Class<?> clazz = p_info.getColumnClass(index);
 			int dt = p_info.getColumnDisplayType(index);
 			try
